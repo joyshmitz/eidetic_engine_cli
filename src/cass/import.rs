@@ -1184,6 +1184,13 @@ fn optional_rfc3339_timestamp_field(
     let Some(value) = item.get(field) else {
         return Ok(None);
     };
+    // A present-but-null optional field is semantically identical to an absent
+    // one: CASS serializes `Option<String>::None` (e.g. a session whose source
+    // file can't be stat'd for an mtime) as JSON `null`, not by omitting the
+    // key. Treat that as "no value" instead of hard-failing the whole batch.
+    if value.is_null() {
+        return Ok(None);
+    }
     let Some(timestamp) = value
         .as_str()
         .filter(|timestamp| !timestamp.is_empty() && timestamp.trim().len() == timestamp.len())
@@ -2387,6 +2394,37 @@ mod tests {
             &json["sessions"][0]["missingMetadata"],
             &json!(expected_missing),
             "reported missing metadata",
+        )
+    }
+
+    #[test]
+    fn null_cass_session_modified_is_treated_as_missing() -> TestResult {
+        // CASS `sessions --json` serializes a session whose source file cannot be
+        // stat'd for an mtime (remote-origin or deleted file) as an explicit
+        // `"modified": null` rather than by omitting the key. A present-but-null
+        // optional field must be treated the same as an absent one (recorded in
+        // missing_metadata) instead of aborting the entire import batch.
+        let input = br#"{
+          "sessions": [
+            {
+              "path": "/tmp/session.jsonl",
+              "workspace": "/tmp/project",
+              "agent": "codex",
+              "modified": null,
+              "message_count": 3
+            }
+          ]
+        }"#;
+
+        let sessions = parse_sessions_json(input).map_err(|error| error.to_string())?;
+        ensure_equal(&sessions.len(), &1, "session count")?;
+        let first = sessions
+            .first()
+            .ok_or_else(|| "missing parsed session".to_string())?;
+        ensure_equal(&first.ended_at, &None::<String>, "null modified -> no ended_at")?;
+        ensure(
+            first.missing_metadata.contains(&"modified".to_string()),
+            "null modified should be recorded as missing metadata",
         )
     }
 
