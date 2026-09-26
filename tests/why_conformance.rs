@@ -255,7 +255,15 @@ fn why_native_rule_and_result_target_use_sourceless_identity_and_feedback() -> T
 
     for format in ["human", "markdown"] {
         let output = native_rule_output(&workspace, &["--format", format, "why", &rule_id])?;
-        ensure_equal(&output.status.code(), &Some(0), "typed text why exit")?;
+        ensure_equal(
+            &output.status.code(),
+            &Some(0),
+            &format!(
+                "typed text why exit; stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )?;
         let text = String::from_utf8_lossy(&output.stdout);
         ensure(
             text.starts_with(&format!("Rule: {rule_id}\n")),
@@ -268,7 +276,15 @@ fn why_native_rule_and_result_target_use_sourceless_identity_and_feedback() -> T
         )?;
     }
     let mermaid = native_rule_output(&workspace, &["--format", "mermaid", "why", &rule_id])?;
-    ensure_equal(&mermaid.status.code(), &Some(0), "typed Mermaid why exit")?;
+    ensure_equal(
+        &mermaid.status.code(),
+        &Some(0),
+        &format!(
+            "typed Mermaid why exit; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&mermaid.stdout),
+            String::from_utf8_lossy(&mermaid.stderr)
+        ),
+    )?;
     ensure(
         String::from_utf8_lossy(&mermaid.stdout).contains(&format!("rule: {rule_id}")),
         "Mermaid labels native rule identity",
@@ -277,10 +293,23 @@ fn why_native_rule_and_result_target_use_sourceless_identity_and_feedback() -> T
         &workspace,
         &["why", &rule_id, "--include-sentinel", "--json"],
     )?;
+    // A deliberate usage refusal (handle_why): exit 1 is the project's usage
+    // code (README exit-code table; ProcessExitCode::Usage). Exit 2 is a
+    // configuration error. Pin the envelope code too, so another exit-1
+    // failure cannot pass as this refusal.
     ensure_equal(
         &unsupported.status.code(),
-        &Some(2),
-        "rule rejects memory sentinel options",
+        &Some(1),
+        &format!(
+            "rule rejects memory sentinel options; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&unsupported.stdout),
+            String::from_utf8_lossy(&unsupported.stderr)
+        ),
+    )?;
+    ensure_equal(
+        &stdout_json(&unsupported)?["error"]["code"].as_str(),
+        &Some("usage"),
+        "sentinel refusal is a usage error",
     )?;
 
     let foreign = tempfile::tempdir().map_err(|error| error.to_string())?;
@@ -291,10 +320,23 @@ fn why_native_rule_and_result_target_use_sourceless_identity_and_feedback() -> T
         &foreign_workspace,
         &["why", &rule_id, "--database", &database_text, "--json"],
     )?;
+    // A rule outside the requesting workspace is withheld as not found
+    // (DomainError::NotFound => exit 1, code "not_found"), exactly like any
+    // other `why` miss, so a foreign workspace cannot probe rule existence.
+    // Exit 3 would claim a storage failure, and there is none.
     ensure_equal(
         &wrong_workspace.status.code(),
-        &Some(3),
-        "explicit database does not override native workspace admission",
+        &Some(1),
+        &format!(
+            "explicit database does not override native workspace admission; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&wrong_workspace.stdout),
+            String::from_utf8_lossy(&wrong_workspace.stderr)
+        ),
+    )?;
+    ensure_equal(
+        &stdout_json(&wrong_workspace)?["error"]["code"].as_str(),
+        &Some("not_found"),
+        "foreign workspace sees not_found",
     )?;
     ensure(
         !String::from_utf8_lossy(&wrong_workspace.stdout).contains(content),
